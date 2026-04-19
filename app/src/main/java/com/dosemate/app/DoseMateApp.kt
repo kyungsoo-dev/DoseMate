@@ -1,6 +1,7 @@
 package com.dosemate.app
 
-import android.graphics.Bitmap
+import android.content.Context
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -25,36 +26,45 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+import java.io.File
 
 @Composable
 fun DoseMateApp() {
+    val context = LocalContext.current
     val ocrItems = remember { mutableStateListOf<String>() }
-    var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var capturedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingImageUri by remember { mutableStateOf<Uri?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("아래 버튼을 눌러 카메라로 글자를 읽어오세요.") }
 
     val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bitmap ->
-        if (bitmap == null) {
+        contract = ActivityResultContracts.TakePicture()
+    ) { isSuccess ->
+        val imageUri = pendingImageUri
+        pendingImageUri = null
+
+        if (!isSuccess || imageUri == null) {
             statusMessage = "사진을 가져오지 못했습니다. 다시 시도해 주세요."
             return@rememberLauncherForActivityResult
         }
-        capturedBitmap = bitmap
+
+        capturedImageUri = imageUri
     }
 
-    LaunchedEffect(capturedBitmap) {
-        val bitmap = capturedBitmap ?: return@LaunchedEffect
+    LaunchedEffect(capturedImageUri) {
+        val imageUri = capturedImageUri ?: return@LaunchedEffect
         isProcessing = true
         statusMessage = "글자를 읽는 중..."
 
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        val image = InputImage.fromBitmap(bitmap, 0)
+        val recognizer = TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+        val image = InputImage.fromFilePath(context, imageUri)
 
         recognizer.process(image)
             .addOnSuccessListener { result ->
@@ -62,20 +72,21 @@ fun DoseMateApp() {
                     .flatMap { block -> block.lines }
                     .map { line -> line.text.trim() }
                     .filter { it.isNotBlank() }
+                    .distinct()
 
                 if (lines.isEmpty()) {
-                    statusMessage = "인식된 글자가 없습니다."
+                    statusMessage = "인식된 글자가 없습니다. 글자에 가까이 맞춰 다시 촬영해 주세요."
                 } else {
                     ocrItems.addAll(lines)
                     statusMessage = "${lines.size}개의 항목을 목록에 추가했습니다."
                 }
             }
             .addOnFailureListener {
-                statusMessage = "글자 인식에 실패했습니다. 조금 더 밝은 곳에서 다시 시도해 주세요."
+                statusMessage = "글자 인식에 실패했습니다. 초점을 맞추고 밝은 곳에서 다시 시도해 주세요."
             }
             .addOnCompleteListener {
                 isProcessing = false
-                capturedBitmap = null
+                capturedImageUri = null
                 recognizer.close()
             }
     }
@@ -93,7 +104,11 @@ fun DoseMateApp() {
                 horizontalAlignment = Alignment.Start
             ) {
                 Button(
-                    onClick = { cameraLauncher.launch(null) },
+                    onClick = {
+                        val outputUri = createTempImageUri(context)
+                        pendingImageUri = outputUri
+                        cameraLauncher.launch(outputUri)
+                    },
                     enabled = !isProcessing
                 ) {
                     Text(text = if (isProcessing) "인식 중..." else "카메라로 글자 읽기")
@@ -133,6 +148,19 @@ fun DoseMateApp() {
             }
         }
     }
+}
+
+private fun createTempImageUri(context: Context): Uri {
+    val imageFile = File.createTempFile(
+        "dosemate_ocr_",
+        ".jpg",
+        context.cacheDir
+    )
+    return FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        imageFile
+    )
 }
 
 @Preview(showBackground = true)
